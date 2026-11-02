@@ -5,7 +5,7 @@ function read(k,f){try{return JSON.parse(localStorage.getItem(k))??f;}catch{retu
 function save(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
 const prefs=read('shizhi-api',{});
 let state={lang:read('shizhi-language','zh'),view:'workspace',courses:[],history:[],courseId:read('shizhi-course',''),
-  requirements:read('shizhi-prompt',''),api:{base_url:prefs.base_url||'',model:prefs.model||'',api_key:''},
+  requirements:read('shizhi-prompt',''),api:{base_url:prefs.base_url||'',model:prefs.model||'',api_key:''},rememberDevice:false,
   quiz:null,answers:{},filter:'all',historyCourse:'',busy:false,uploading:false,jobId:read('shizhi-job',''),job:null,cloud:false,storageId:''};
 if(!['zh','en'].includes(state.lang))state.lang='zh';
 const t=(zh,en)=>state.lang==='en'?en:zh;
@@ -83,13 +83,41 @@ async function uploadFiles(files){
 function settings(){
   baseModal(t('连接你的模型','Connect your model'),t('兼容 Chat Completions 的 API 接口','Any Chat Completions compatible API'),`<label class="field-label" for="api-preset">${t('服务商','Provider')}</label><select id="api-preset"><option value="custom">${t('自定义接口','Custom endpoint')}</option><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="local">${t('本机模型','Local model')}</option></select><label class="field-label" for="api-base">API Base URL</label><input id="api-base" type="url" value="${e(state.api.base_url)}" placeholder="https://your-provider.com/v1" autocomplete="off"><label class="field-label" for="api-model">${t('模型名称','Model ID')}</label><input id="api-model" value="${e(state.api.model)}" placeholder="${t('服务商提供的模型 ID','Model identifier from your provider')}" autocomplete="off"><label class="field-label" for="api-key">API Key</label><div class="key-field"><input id="api-key" type="password" value="${e(state.api.api_key)}" placeholder="${t('本机无鉴权模型可留空','Optional for local models without authentication')}" autocomplete="off"><button class="button button-white button-small" id="toggle-key">${t('显示','Show')}</button></div><div class="modal-hint">${t('密钥仅在本次页面和任务处理的内存中使用，刷新后需重填。接口地址和模型名会记住。远程接口使用 HTTPS，本机可用 HTTP。','Your key stays in memory during this session and active tasks. Re-enter it after refreshing. Only the endpoint and model ID are remembered. Remote endpoints require HTTPS; local models may use HTTP.')}</div>`,`<button class="text-button clear-settings" id="clear-settings">${t('清除配置','Clear')}</button><button class="button button-white" id="check-model">${t('测试连接','Test connection')}</button><button class="button button-primary" id="save-settings">${t('保存','Save')}</button>`);
   const presets={deepseek:{base_url:'https://api.deepseek.com',model:'deepseek-flash'},openai:{base_url:'https://api.openai.com/v1',model:''},local:{base_url:'http://127.0.0.1:1234/v1',model:''}};
-  if(state.cloud){$('#api-preset option[value="local"]').remove();$('#modal .modal-hint').textContent=t('密钥仅在本次页面和任务处理的内存中使用，刷新后需重填。接口地址和模型名会记住。线上版仅支持公网 HTTPS 模型接口，不能访问你电脑上的本机模型。','Your key stays in memory during this session and active tasks. Re-enter it after refreshing. Only the endpoint and model ID are remembered. The hosted site supports public HTTPS model APIs and cannot connect to models running on your computer.');}
-  $('#api-preset').addEventListener('change',ev=>{const p=presets[ev.target.value];if(p){$('#api-base').value=p.base_url;$('#api-model').value=p.model;}});
+  const hint=$('#modal .modal-hint');
+  hint.insertAdjacentHTML('beforebegin',`<label class="remember-device" for="remember-device"><input type="checkbox" id="remember-device" ${state.rememberDevice?'checked':''} aria-describedby="remember-device-help"><span>${t('在此设备记住密钥','Remember key on this device')}</span></label><p id="remember-device-help" class="remember-help">${t('加密保存在此浏览器，关闭时删除。请只在可信个人设备开启。','Encrypted in this browser; deleted when turned off. Enable only on a trusted personal device.')}</p>`);
+  hint.textContent=t('默认不保存密钥，刷新后需重填。接口地址和模型名会记住。','Keys are not saved by default and must be re-entered after refreshing. The endpoint and model ID are remembered.')+' '+(state.cloud?t('线上版仅支持公网 HTTPS 模型接口。','The hosted site supports public HTTPS model APIs only.'):t('远程接口使用 HTTPS，本机可用 HTTP。','Remote endpoints require HTTPS; local models may use HTTP.'));
+  if(state.cloud)$('#api-preset option[value="local"]').remove();
+  let keyEndpoint=$('#api-base').value.trim();
+  const endpointChanged=()=>{const next=$('#api-base').value.trim();if(next!==keyEndpoint)$('#api-key').value='';keyEndpoint=next;};
+  $('#api-base').addEventListener('input',endpointChanged);
+  $('#api-preset').addEventListener('change',ev=>{const p=presets[ev.target.value];if(p){$('#api-base').value=p.base_url;$('#api-model').value=p.model;endpointChanged();}});
   $('#toggle-key').addEventListener('click',()=>{const input=$('#api-key');input.type=input.type==='password'?'text':'password';$('#toggle-key').textContent=input.type==='password'?t('显示','Show'):t('隐藏','Hide');});
   const values=()=>({base_url:$('#api-base').value.trim(),model:$('#api-model').value.trim(),api_key:$('#api-key').value.trim()});
-  $('#save-settings').addEventListener('click',()=>{const value=values();if(!value.base_url||!value.model){modalError(t('请填写接口地址和模型名称。','Enter an endpoint and model ID.'));return;}state.api=value;save('shizhi-api',{base_url:value.base_url,model:value.model});$('#modal').close();renderHeader();toast(t('配置已保存，密钥仅本次有效。','Settings saved. Your key is kept only for this session.'));});
-  $('#clear-settings').addEventListener('click',()=>{state.api={base_url:'',model:'',api_key:''};save('shizhi-api',{});$('#modal').close();renderHeader();toast(t('API 配置已清除。','API settings cleared.'));});
-  $('#check-model').addEventListener('click',async()=>{const button=$('#check-model'),other=$('#save-settings');button.disabled=true;other.disabled=true;button.textContent=t('连接中…','Connecting…');try{await api('/api/check-model',{api:values()});toast(t('连接成功，保存后即可使用。','Connected. Save your settings to start.'));}catch(err){modalError(err.message);}finally{if(button.isConnected){button.disabled=false;other.disabled=false;button.textContent=t('测试连接','Test connection');}}});
+  const controls=$$('#modal input, #modal select, #modal button');
+  const lock=busy=>controls.forEach(control=>control.disabled=busy);
+  const persistMetadata=()=>save('shizhi-api',{base_url:state.api.base_url,model:state.api.model,remember_device:state.rememberDevice});
+  const storageError=()=>modalError(t('无法访问浏览器安全存储，操作未完成。请允许此网站存储后重试。','Cannot access secure browser storage. The operation was not completed. Allow site storage and retry.'));
+  $('#remember-device').addEventListener('change',async ev=>{
+    if(ev.target.checked)return;
+    lock(true);
+    try{await window.ShizhiDeviceKey.clear();state.rememberDevice=false;persistMetadata();toast(t('已删除此浏览器保存的密钥，本页仍可继续使用。','Saved key deleted from this browser. You can still use it on this page.'));}
+    catch{ev.target.checked=state.rememberDevice;storageError();}finally{lock(false);}
+  });
+  $('#save-settings').addEventListener('click',async()=>{
+    const value=values(),remember=$('#remember-device').checked;
+    if(!value.base_url||!value.model){modalError(t('请填写接口地址和模型名称。','Enter an endpoint and model ID.'));return;}
+    if(remember&&!value.api_key){modalError(t('请填写要记住的 API Key，或关闭记住密钥。','Enter an API key to remember, or turn off Remember key.'));return;}
+    lock(true);
+    try{
+      if(remember)await window.ShizhiDeviceKey.save(value);else if(state.rememberDevice||prefs.remember_device)await window.ShizhiDeviceKey.clear();
+      state.api=value;state.rememberDevice=remember;persistMetadata();$('#modal').close();renderHeader();
+      toast(remember?t('已加密保存，刷新后会自动恢复。','Saved encrypted. Your key will be restored after refreshing.'):t('配置已保存，密钥仅本次有效。','Settings saved. Your key is kept only for this session.'));
+    }catch{storageError();}finally{lock(false);}
+  });
+  $('#clear-settings').addEventListener('click',async()=>{
+    lock(true);try{await window.ShizhiDeviceKey.clear();state.api={base_url:'',model:'',api_key:''};state.rememberDevice=false;save('shizhi-api',{});$('#modal').close();renderHeader();toast(t('API 配置及保存的密钥已清除。','API settings and saved key cleared.'));}catch{storageError();}finally{lock(false);}
+  });
+  $('#check-model').addEventListener('click',async()=>{const button=$('#check-model');lock(true);button.textContent=t('连接中…','Connecting…');try{await api('/api/check-model',{api:values()});toast(t('连接成功，保存后即可使用。','Connected. Save your settings to start.'));}catch(err){modalError(err.message);}finally{lock(false);button.textContent=t('测试连接','Test connection');}});
 }
 async function generate(){
   if(state.busy)return;if(!course()){newCourse();return;}if(!course().materials.length){toast(t('先上传或粘贴课程资料。','Upload or paste your course materials first.'),true);return;}if(!state.requirements.trim()){toast(t('请在对话框里说出你的出题要求。','Tell us what practice you would like in the text box.'),true);$('#requirements').focus();return;}if(!state.api.base_url||!state.api.model){settings();return;}
@@ -143,5 +171,9 @@ document.addEventListener('click',async ev=>{const button=ev.target.closest('but
 }catch(err){button.disabled=false;toast(err.message,true);}});
 document.addEventListener('change',ev=>{if(ev.target.id==='history-course'){state.historyCourse=ev.target.value;render();}});
 window.addEventListener('beforeunload',ev=>{if(state.uploading){ev.preventDefault();ev.returnValue='';}});
+async function restoreDeviceKey(){
+  try{const config=await window.ShizhiDeviceKey.load();if(config){state.api=config;state.rememberDevice=true;save('shizhi-api',{base_url:config.base_url,model:config.model,remember_device:true});}}
+  catch{if(prefs.remember_device)toast(t('无法恢复保存的密钥，请在 API 设置中重新填写或清除配置。','Cannot restore the saved key. Re-enter it or clear your API settings.'),true);}
+}
 async function start(){try{await refresh();const match=location.hash.match(/^#quiz=([a-f0-9]{32})$/);if(match){try{await openQuiz(match[1]);}catch{history.replaceState(null,'','/');render();}}else render();if(state.jobId){state.busy=true;await pollJob();}}catch(err){$('#main').innerHTML=`<div class="card empty-page"><h3>${t('无法打开学习空间','Cannot open your workspace')}</h3><p>${e(err.message)}</p><button class="button button-primary" id="retry-start">${t('重新连接','Reconnect')}</button></div>`;$('#retry-start').addEventListener('click',start);}}
-start();
+restoreDeviceKey().then(start);

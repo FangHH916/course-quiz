@@ -9,7 +9,7 @@ import urllib.parse
 import server as app
 
 STATIC = {'/': ('index.html', 'text/html; charset=utf-8'), '/workspace.js': ('workspace.js', 'text/javascript; charset=utf-8'),
-          '/storage.js': ('storage.js', 'text/javascript; charset=utf-8'), '/effects.js': ('effects.js', 'text/javascript; charset=utf-8'),
+          '/storage.js': ('storage.js', 'text/javascript; charset=utf-8'), '/device-key.js': ('device-key.js', 'text/javascript; charset=utf-8'), '/effects.js': ('effects.js', 'text/javascript; charset=utf-8'),
           '/style.css': ('style.css', 'text/css; charset=utf-8'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
 UPLOADS = threading.BoundedSemaphore(1)
 BUCKETS = OrderedDict()
