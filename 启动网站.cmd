@@ -6,7 +6,7 @@ if not exist ".venv\Scripts\python.exe" (
   python -m venv .venv
   if errorlevel 1 goto :failed
 )
-".venv\Scripts\python.exe" -c "import pypdf" >nul 2>&1
+".venv\Scripts\python.exe" -c "import pypdf, cryptography" >nul 2>&1
 if errorlevel 1 (
   echo 正在安装 PDF 读取依赖，首次启动需要联网...
   ".venv\Scripts\python.exe" -m pip install -r requirements.txt

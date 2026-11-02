@@ -6,7 +6,7 @@ function save(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
 const prefs=read('shizhi-api',{});
 let state={lang:read('shizhi-language','zh'),view:'workspace',courses:[],history:[],courseId:read('shizhi-course',''),
   requirements:read('shizhi-prompt',''),api:{base_url:prefs.base_url||'',model:prefs.model||'',api_key:''},
-  quiz:null,answers:{},filter:'all',historyCourse:'',busy:false,uploading:false,jobId:read('shizhi-job',''),job:null};
+  quiz:null,answers:{},filter:'all',historyCourse:'',busy:false,uploading:false,jobId:read('shizhi-job',''),job:null,cloud:false,storageId:''};
 if(!['zh','en'].includes(state.lang))state.lang='zh';
 const t=(zh,en)=>state.lang==='en'?en:zh;
 const labels=()=>({calculation:t('计算题','Calculation'),true_false:t('判断题','True / false'),choice:t('选择题','Multiple choice')});
@@ -18,18 +18,26 @@ async function api(path,data,method){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),path==='/api/check-model'?200000:60000);
   try{
     const response=await fetch(path,{method:method||(data===undefined?'GET':'POST'),headers:{...(data===undefined?{}:{'Content-Type':'application/json'}),'Accept-Language':state.lang},body:data===undefined?undefined:JSON.stringify(data),signal:controller.signal});
-    const result=await response.json();if(!response.ok)throw new Error(result.error||t('请求失败。','Request failed.'));return result;
+    const result=await response.json();if(!response.ok){const error=new Error(result.error||t('请求失败。','Request failed.'));error.status=response.status;throw error;}return result;
   }catch(err){if(err.name==='AbortError')throw new Error(t('请求超时，请稍后重试。','Request timed out. Please try again.'));if(err instanceof TypeError)throw new Error(t('无法连接本地服务，请确认启动窗口仍在运行。','Cannot reach the local server. Make sure it is running.'));throw err;}
   finally{clearTimeout(timer);}
 }
 const course=()=>state.courses.find(c=>c.id===state.courseId);
 const dateText=n=>new Date(n*1000).toLocaleString(state.lang==='en'?'en-GB':'zh-CN',{month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
-async function refresh(){const result=await api('/api/state');state.courses=result.courses;state.history=result.history;if(!course())state.courseId=state.courses[0]?.id||'';save('shizhi-course',state.courseId);}
+async function refresh(){
+  let result=await api('/api/state');state.cloud=Boolean(result.cloud);state.storageId=result.storage_id||'';
+  if(state.cloud&&result.needs_restore){
+    let snapshot;try{snapshot=await window.ShizhiBackup.get(state.storageId);}catch{throw new Error(t('请允许浏览器存储后重新打开，才能安全恢复学习资料。','Allow browser storage and reopen this page to restore your materials safely.'));}
+    await api('/api/workspace/restore',{snapshot});result=await api('/api/state');
+  }
+  state.courses=result.courses;state.history=result.history;if(!course())state.courseId=state.courses[0]?.id||'';save('shizhi-course',state.courseId);
+  if(state.cloud){try{const backup=await api('/api/workspace/snapshot');await window.ShizhiBackup.put(state.storageId,backup.snapshot);}catch{toast(t('浏览器备份失败。请保持页面打开，检查浏览器存储空间后重试。','Browser backup failed. Keep this page open and check available browser storage.'),true);}}
+}
 function renderHeader(){
   document.documentElement.lang=state.lang==='en'?'en':'zh-CN';
   $('#navigation').innerHTML=[['workspace',t('工作台','Workspace')],['history',t('练习记录','Practice')],['mistakes',t('错题','Mistakes')]].map(([view,label])=>`<button class="nav-item ${state.view===view||(state.view==='quiz'&&view==='workspace')?'active':''}" data-view="${view}">${label}</button>`).join('');
   $('#top-actions').innerHTML=`<button class="utility-button language-button" data-action="language" aria-label="${t('切换为英文','Switch to Chinese')}">${icon('globe')}<span>${t('EN','中文')}</span></button><button class="utility-button effects-toggle" id="effects-toggle" data-action="effects" aria-pressed="${read('shizhi-effects',true)}" aria-label="${t('开关动态效果','Toggle motion effects')}">${icon('spark')}</button><button class="button button-white button-small" data-action="settings"><span class="connection-dot ${state.api.base_url&&state.api.model?'connected':''}"></span>API ${t('设置','settings')}</button>`;
-  $('#footer-note').textContent=t('资料与成绩保存在本机','Materials and results stay on this device');
+  $('#footer-note').textContent=state.cloud?t('浏览器独立空间 · 自动加密备份','Private browser workspace · encrypted backup'):t('资料与成绩保存在本机','Materials and results stay on this device');
 }
 function render(){renderHeader();$('#main').innerHTML=state.view==='workspace'?workspaceHTML():state.view==='quiz'&&state.quiz?(state.quiz.result?resultHTML():quizHTML()):historyHTML();if(state.view==='workspace')bindWorkspace();if(state.view==='quiz'&&!state.quiz?.result)bindAnswers();document.dispatchEvent(new CustomEvent('shizhi:render'));}
 function go(view){state.view=view;state.filter='all';render();window.scrollTo(0,0);if(view!=='quiz')history.replaceState(null,'','/');}
@@ -75,6 +83,7 @@ async function uploadFiles(files){
 function settings(){
   baseModal(t('连接你的模型','Connect your model'),t('兼容 Chat Completions 的 API 接口','Any Chat Completions compatible API'),`<label class="field-label" for="api-preset">${t('服务商','Provider')}</label><select id="api-preset"><option value="custom">${t('自定义接口','Custom endpoint')}</option><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="local">${t('本机模型','Local model')}</option></select><label class="field-label" for="api-base">API Base URL</label><input id="api-base" type="url" value="${e(state.api.base_url)}" placeholder="https://your-provider.com/v1" autocomplete="off"><label class="field-label" for="api-model">${t('模型名称','Model ID')}</label><input id="api-model" value="${e(state.api.model)}" placeholder="${t('服务商提供的模型 ID','Model identifier from your provider')}" autocomplete="off"><label class="field-label" for="api-key">API Key</label><div class="key-field"><input id="api-key" type="password" value="${e(state.api.api_key)}" placeholder="${t('本机无鉴权模型可留空','Optional for local models without authentication')}" autocomplete="off"><button class="button button-white button-small" id="toggle-key">${t('显示','Show')}</button></div><div class="modal-hint">${t('密钥仅在本次页面和任务处理的内存中使用，刷新后需重填。接口地址和模型名会记住。远程接口使用 HTTPS，本机可用 HTTP。','Your key stays in memory during this session and active tasks. Re-enter it after refreshing. Only the endpoint and model ID are remembered. Remote endpoints require HTTPS; local models may use HTTP.')}</div>`,`<button class="text-button clear-settings" id="clear-settings">${t('清除配置','Clear')}</button><button class="button button-white" id="check-model">${t('测试连接','Test connection')}</button><button class="button button-primary" id="save-settings">${t('保存','Save')}</button>`);
   const presets={deepseek:{base_url:'https://api.deepseek.com',model:'deepseek-flash'},openai:{base_url:'https://api.openai.com/v1',model:''},local:{base_url:'http://127.0.0.1:1234/v1',model:''}};
+  if(state.cloud)$('#api-preset option[value="local"]').remove();
   $('#api-preset').addEventListener('change',ev=>{const p=presets[ev.target.value];if(p){$('#api-base').value=p.base_url;$('#api-model').value=p.model;}});
   $('#toggle-key').addEventListener('click',()=>{const input=$('#api-key');input.type=input.type==='password'?'text':'password';$('#toggle-key').textContent=input.type==='password'?t('显示','Show'):t('隐藏','Hide');});
   const values=()=>({base_url:$('#api-base').value.trim(),model:$('#api-model').value.trim(),api_key:$('#api-key').value.trim()});
@@ -96,7 +105,7 @@ async function pollJob(){
     if(job.quiz_id){await openQuiz(job.quiz_id);if(job.status!=='complete')toast(t('已保存完成的题目，可先开始作答。','Completed questions were saved. You can practice them now.'));else toast(t('练习已生成。','Your practice is ready.'));}
     else{render();if(job.error)toast(job.error,true);else toast(t('已停止，没有生成完整的题目。','Stopped. No complete questions were generated.'));}
     if(job.error&&job.quiz_id)toast(job.error,true);
-  }catch(err){state.busy=false;render();toast(err.message,true);}
+  }catch(err){if(err.status===404){state.jobId='';save('shizhi-job','');}state.busy=false;render();toast(err.message,true);}
 }
 async function cancelJob(){if(!state.jobId)return;await api(`/api/jobs/${state.jobId}/cancel`,{});toast(t('正在停止，将在当前批次返回后保留已完成题目。','Stopping after the current batch returns. Completed questions will be kept.'));}
 async function openQuiz(id,wrongOnly=false){state.quiz=await api(`/api/quizzes/${id}`);state.courseId=state.quiz.course_id;state.answers=state.quiz.result?Object.fromEntries(state.quiz.result.items.map(x=>[x.id,x.answer])):read(`shizhi-draft-${id}`,{});state.view='quiz';state.filter=wrongOnly?'wrong':'all';history.replaceState(null,'',`/#quiz=${id}`);render();window.scrollTo(0,0);}

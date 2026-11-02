@@ -1,16 +1,23 @@
-"""Course Quiz: local-only study workbench. Python 3.11+, optional pypdf for PDF."""
+"""Course Quiz: local and hosted study workbench. Python 3.11+."""
 from __future__ import annotations
 
 import argparse
 import base64
 import binascii
+from contextvars import ContextVar, copy_context
 from decimal import Decimal, InvalidOperation, localcontext
+import hashlib
+import hmac
+from http.cookies import SimpleCookie
+import ipaddress
 import io
 import json
 import math
 import os
 from pathlib import Path
 import re
+import secrets
+import socket
 import sqlite3
 import ssl
 import threading
@@ -33,6 +40,14 @@ TYPES = {'calculation': '计算题', 'true_false': '判断题', 'choice': '选�
 MODEL_SLOTS = threading.BoundedSemaphore(2)
 JOBS = {}
 JOBS_LOCK = threading.Lock()
+JOB_OWNERS = {}
+CLOUD = os.environ.get('COURSE_QUIZ_CLOUD') == '1'
+PUBLIC_ORIGIN = os.environ.get('COURSE_QUIZ_PUBLIC_ORIGIN', os.environ.get('RENDER_EXTERNAL_URL', '')).rstrip('/')
+APP_SECRET = os.environ.get('COURSE_QUIZ_SECRET', '')
+WORKSPACE = ContextVar('workspace', default=None)
+INITIALIZED = set()
+INIT_LOCK = threading.Lock()
+SNAPSHOT_TABLES = ('courses', 'materials', 'quizzes')
 
 
 class AppError(Exception):
@@ -108,9 +123,15 @@ class ClosingConnection(sqlite3.Connection):
             self.close()
 
 
+def data_directory():
+    workspace = WORKSPACE.get()
+    return DATA / 'workspaces' / workspace if workspace else DATA
+
+
 def connect():
-    DATA.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(DATA / 'study.db', timeout=20, factory=ClosingConnection)
+    directory = data_directory()
+    directory.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(directory / 'study.db', timeout=20, factory=ClosingConnection)
     db.row_factory = sqlite3.Row
     db.execute('PRAGMA foreign_keys=ON')
     return db
@@ -127,8 +148,72 @@ def init_db():
         CREATE TABLE IF NOT EXISTS generation_jobs(id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
           status TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0, total INTEGER, quiz_id TEXT, error TEXT,
           created REAL NOT NULL, updated REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS workspace_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
         ''')
         db.execute("UPDATE generation_jobs SET status='interrupted',error='本地服务已重启，请重新生成。' WHERE status IN ('planning','running')")
+
+
+def session_cookie(value):
+    try:
+        cookies = SimpleCookie()
+        cookies.load(value or '')
+        token = cookies['shizhi_workspace'].value
+        workspace, signature = token.split('.')
+        expected = hmac.new(APP_SECRET.encode(), workspace.encode(), hashlib.sha256).hexdigest()
+        if re.fullmatch(r'[a-f0-9]{32}', workspace) and hmac.compare_digest(signature, expected):
+            return workspace, None
+    except (KeyError, ValueError, TypeError):
+        pass
+    workspace = secrets.token_hex(16)
+    signature = hmac.new(APP_SECRET.encode(), workspace.encode(), hashlib.sha256).hexdigest()
+    secure = '; Secure' if PUBLIC_ORIGIN.startswith('https://') else ''
+    return workspace, f'shizhi_workspace={workspace}.{signature}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000{secure}'
+
+
+def ensure_workspace():
+    directory = str(data_directory())
+    with INIT_LOCK:
+        if directory not in INITIALIZED:
+            init_db()
+            INITIALIZED.add(directory)
+
+
+def snapshot_cipher():
+    from cryptography.fernet import Fernet
+    key = hmac.new(APP_SECRET.encode(), ('snapshot:' + WORKSPACE.get()).encode(), hashlib.sha256).digest()
+    return Fernet(base64.urlsafe_b64encode(key))
+
+
+def create_snapshot(db):
+    db.execute('BEGIN')
+    content = {'version': 1, 'tables': {table: [dict(row) for row in db.execute(f'SELECT * FROM {table}')] for table in SNAPSHOT_TABLES}}
+    return snapshot_cipher().encrypt(json.dumps(content, ensure_ascii=False, allow_nan=False).encode()).decode()
+
+
+def restore_snapshot(db, token):
+    from cryptography.fernet import InvalidToken
+    db.execute('BEGIN IMMEDIATE')
+    if db.execute("SELECT 1 FROM workspace_meta WHERE key='initialized'").fetchone():
+        return
+    if token:
+        try:
+            if not isinstance(token, str) or len(token) > MAX_BODY:
+                raise ValueError('size')
+            content = json.loads(snapshot_cipher().decrypt(token.encode()))
+            if content.get('version') != 1 or set(content['tables']) != set(SNAPSHOT_TABLES):
+                raise ValueError('schema')
+            for table in SNAPSHOT_TABLES:
+                allowed = [row[1] for row in db.execute(f'PRAGMA table_info({table})')]
+                rows = content['tables'][table]
+                if not isinstance(rows, list):
+                    raise ValueError('rows')
+                for row in rows:
+                    if not isinstance(row, dict) or set(row) != set(allowed):
+                        raise ValueError('columns')
+                    db.execute(f'INSERT INTO {table} ({",".join(allowed)}) VALUES ({",".join("?" for _ in allowed)})', [row[key] for key in allowed])
+        except (InvalidToken, UnicodeError, ValueError, TypeError, KeyError, sqlite3.Error):
+            raise AppError('浏览器备份无法恢复，请保留当前浏览器数据并联系维护者。', 422) from None
+    db.execute("INSERT INTO workspace_meta VALUES('initialized','1')")
 
 
 def uid():
@@ -274,6 +359,15 @@ def model_request(config, system, user, max_tokens=14000):
         raise AppError('请填写不含密钥、查询参数的 HTTPS API Base URL。')
     if url.scheme == 'http' and hostname not in {'localhost', '127.0.0.1', '::1'}:
         raise AppError('远程模型地址需要 HTTPS；HTTP 仅允许本机模型。')
+    if CLOUD:
+        if url.scheme != 'https':
+            raise AppError('线上版只能连接公网 HTTPS 模型接口，无法访问你电脑上的本机模型。')
+        try:
+            addresses = socket.getaddrinfo(hostname, port or 443, type=socket.SOCK_STREAM)
+            if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
+                raise AppError('线上版模型地址必须是公网 HTTPS 接口。')
+        except socket.gaierror:
+            raise AppError('无法解析模型接口域名，请检查 API 地址。') from None
     endpoint = base if url.path.endswith('/chat/completions') else base + '/chat/completions'
     token_field = 'max_completion_tokens' if hostname == 'api.openai.com' else 'max_tokens'
     body = json.dumps({'model': model, 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
@@ -471,6 +565,7 @@ def generate_worker(jid, cid, course_name, requirements, language, sources, conf
             config.clear()
             with JOBS_LOCK:
                 JOBS.pop(jid, None)
+                JOB_OWNERS.pop(jid, None)
 
 
 SYSTEM = '''你是一位严谨的课程命题老师。仅基于用户提供的复习资料，用中文出题（用户明确要求其他语言则遵从）。
@@ -568,7 +663,16 @@ def dispatch(method, path, data):
                 histories.append({'id': row['id'], 'course_id': row['course_id'], 'course_name': row['course_name'], 'title': row['title'],
                                   'created': row['created'], 'total': len(json.loads(row['questions'])), 'score': result['score'] if result else None,
                                   'wrong': result['total'] - result['correct'] if result else None, 'demo': bool(row['demo'])})
-            return {'courses': courses, 'history': histories}
+            result = {'courses': courses, 'history': histories}
+            if CLOUD:
+                result.update(cloud=True, storage_id=hashlib.sha256(WORKSPACE.get().encode()).hexdigest(),
+                              needs_restore=not bool(db.execute("SELECT 1 FROM workspace_meta WHERE key='initialized'").fetchone()))
+            return result
+        if CLOUD and path == '/api/workspace/restore' and method == 'POST':
+            restore_snapshot(db, data.get('snapshot'))
+            return {'ok': True}
+        if CLOUD and path == '/api/workspace/snapshot' and method == 'GET':
+            return {'snapshot': create_snapshot(db)}
         if method == 'POST' and path == '/api/courses':
             name = required_text(data.get('name'), '课程名称', 80)
             cid = uid()
@@ -602,16 +706,19 @@ def dispatch(method, path, data):
             jid = uid()
             cancel = threading.Event()
             with JOBS_LOCK:
-                if JOBS:
+                if any(JOB_OWNERS.get(key) == WORKSPACE.get() for key in JOBS):
                     raise AppError('已有出题任务在运行，请等待完成或先停止。', 409)
                 JOBS[jid] = cancel
+                JOB_OWNERS[jid] = WORKSPACE.get()
             try:
                 db.execute('INSERT INTO generation_jobs(id,course_id,status,created,updated) VALUES(?,?,?,?,?)', (jid, cid, 'planning', time.time(), time.time()))
                 db.commit()
-                threading.Thread(target=generate_worker, args=(jid, cid, course['name'], requirements, language, sources, dict(config), cancel), daemon=True).start()
+                context = copy_context()
+                threading.Thread(target=context.run, args=(generate_worker, jid, cid, course['name'], requirements, language, sources, dict(config), cancel), daemon=True).start()
             except Exception:
                 with JOBS_LOCK:
                     JOBS.pop(jid, None)
+                    JOB_OWNERS.pop(jid, None)
                 raise
             return {'job_id': jid}
         match = re.fullmatch(r'/api/jobs/([a-f0-9]{32})(?:/(cancel))?', path)
@@ -674,11 +781,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(30)
+
     def send_bytes(self, status, payload, content_type):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(payload)))
         self.send_header('Cache-Control', 'no-store')
+        if getattr(self, 'workspace_cookie', None):
+            self.send_header('Set-Cookie', self.workspace_cookie)
+            self.workspace_cookie = None
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
@@ -686,15 +800,27 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def handle_request(self, method):
+        workspace_context = None
         try:
             host = self.headers.get('Host', '')
-            if host not in {f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}'}:
+            allowed_hosts = {f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}'}
+            allowed_origins = {f'http://localhost:{self.server.server_port}', f'http://127.0.0.1:{self.server.server_port}'}
+            if CLOUD and PUBLIC_ORIGIN:
+                allowed_hosts.add(urllib.parse.urlsplit(PUBLIC_ORIGIN).netloc)
+                allowed_origins.add(PUBLIC_ORIGIN)
+            if host not in allowed_hosts:
                 raise AppError('此服务仅供本机访问。', 403)
             origin = self.headers.get('Origin')
-            if origin and origin not in {f'http://localhost:{self.server.server_port}', f'http://127.0.0.1:{self.server.server_port}'}:
+            if origin and origin not in allowed_origins:
                 raise AppError('请求来源不受支持。', 403)
             path = urllib.parse.urlsplit(self.path).path
+            if method == 'GET' and path == '/healthz':
+                return self.send_bytes(200, b'{"ok":true}', 'application/json')
             if path.startswith('/api/'):
+                if CLOUD:
+                    workspace, self.workspace_cookie = session_cookie(self.headers.get('Cookie'))
+                    workspace_context = WORKSPACE.set(workspace)
+                    ensure_workspace()
                 data = {}
                 if method == 'POST':
                     size = int(self.headers.get('Content-Length', '0'))
@@ -713,6 +839,7 @@ class Handler(BaseHTTPRequestHandler):
             if method != 'GET':
                 raise AppError('不支持的请求。', 405)
             files = {'/': ('index.html', 'text/html; charset=utf-8'), '/workspace.js': ('workspace.js', 'text/javascript; charset=utf-8'),
+                     '/storage.js': ('storage.js', 'text/javascript; charset=utf-8'),
                      '/effects.js': ('effects.js', 'text/javascript; charset=utf-8'),
                      '/style.css': ('style.css', 'text/css; charset=utf-8'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
             if path not in files:
@@ -725,6 +852,9 @@ class Handler(BaseHTTPRequestHandler):
             pass
         except Exception:
             self.send_bytes(500, json.dumps({'error': '处理失败，请稍后重试。资料与已提交成绩仍保存在本机。'}, ensure_ascii=False).encode('utf-8'), 'application/json; charset=utf-8')
+        finally:
+            if workspace_context is not None:
+                WORKSPACE.reset(workspace_context)
 
     def do_GET(self):
         self.handle_request('GET')
@@ -738,10 +868,16 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(description='Course Quiz local web server')
-    parser.add_argument('--port', type=int, default=8767)
+    parser.add_argument('--port', type=int, default=int(os.environ.get('PORT', '8767')))
+    parser.add_argument('--host', default='0.0.0.0' if CLOUD else '127.0.0.1')
     args = parser.parse_args()
-    init_db()
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
+    if CLOUD:
+        if len(APP_SECRET) < 32 or not PUBLIC_ORIGIN.startswith('https://'):
+            raise SystemExit('Hosted mode requires COURSE_QUIZ_SECRET (32+ chars) and an HTTPS public origin.')
+        DATA.mkdir(parents=True, exist_ok=True)
+    else:
+        init_db()
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
     print(f'Course Quiz is running at http://127.0.0.1:{args.port}', flush=True)
     try:

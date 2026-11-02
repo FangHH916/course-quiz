@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: shizhi-course-quiz
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -B server.py
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.9
+      - key: COURSE_QUIZ_CLOUD
+        value: "1"
+      - key: COURSE_QUIZ_SECRET
+        generateValue: true
