@@ -8,6 +8,7 @@ from contextvars import ContextVar, copy_context
 from decimal import Decimal, InvalidOperation, localcontext
 import hashlib
 import hmac
+import http.client
 from http.cookies import SimpleCookie
 import ipaddress
 import io
@@ -341,6 +342,31 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class PublicHTTPSConnection(http.client.HTTPSConnection):
+    """Resolve and validate immediately before connecting; pin the selected public IP."""
+    def connect(self):
+        addresses = socket.getaddrinfo(self.host, self.port, type=socket.SOCK_STREAM)
+        if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
+            raise AppError('线上版模型地址必须是公网 HTTPS 接口。')
+        last_error = None
+        for address in addresses:
+            raw = None
+            try:
+                raw = socket.create_connection((address[4][0], self.port), timeout=self.timeout, source_address=self.source_address)
+                self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+                return
+            except OSError as exc:
+                if raw is not None:
+                    raw.close()
+                last_error = exc
+        raise last_error or OSError('No public address available')
+
+
+class PublicHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(PublicHTTPSConnection, req, context=self._context)
+
+
 def model_request(config, system, user, max_tokens=14000):
     if not isinstance(config, dict):
         raise AppError('请先在 API 设置中填写模型信息。')
@@ -378,7 +404,8 @@ def model_request(config, system, user, max_tokens=14000):
     if not MODEL_SLOTS.acquire(blocking=False):
         raise AppError('模型正在处理其他请求，请稍后再试。', 429)
     try:
-        opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+        transport = PublicHTTPSHandler(context=ssl.create_default_context()) if CLOUD else urllib.request.HTTPSHandler(context=ssl.create_default_context())
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}) if CLOUD else urllib.request.ProxyHandler(), NoRedirect(), transport)
         request = urllib.request.Request(endpoint, body, headers, method='POST')
         with opener.open(request, timeout=180) as response:
             raw = response.read(2 * 1024 * 1024 + 1)

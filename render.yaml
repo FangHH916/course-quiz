@@ -5,7 +5,7 @@ services:
     plan: free
     region: singapore
     buildCommand: pip install -r requirements.txt
-    startCommand: python -B server.py
+    startCommand: python -B cloud_app.py
     healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION

@@ -42,7 +42,7 @@ python -m venv .venv
 
 ## 上线部署
 
-项目提供 `render.yaml`，在 Render 中选择本仓库，创建免费 Python Web Service。构建命令 `pip install -r requirements.txt`，启动命令 `python -B server.py`，健康检查 `/healthz`，区域 Singapore。
+项目提供 `render.yaml`，在 Render 中选择本仓库，创建免费 Python Web Service。构建命令 `pip install -r requirements.txt`，启动命令 `python -B cloud_app.py`，健康检查 `/healthz`，区域 Singapore。
 
 环境变量：
 
@@ -56,6 +56,8 @@ python -m venv .venv
 请使用同一个浏览器并保留网站 Cookie 和浏览器存储；无痕窗口、清理网站数据、换设备、改域名或更换服务端密钥后无法自动恢复原工作区。正在生成而尚未完成的任务在服务器重启后需重新发起。API 设置中线上版只允许公网 HTTPS 接口，不能访问你电脑上的本机模型。
 
 免费实例空闲后会休眠，首次重新访问可能需要约一分钟。上述行为以 [Render 免费实例说明](https://render.com/docs/free) 为准。
+
+线上使用 Waitress，限制 HTTP 连接、请求体大小、API 请求速率和上传解析并发；这些限制不限制一套练习的总题数。模型 HTTPS 连接在实际连接时解析域名并固定到校验过的公网 IP，禁用代理环境变量和重定向，防止通过模型地址访问云端内网。当前仍是个人使用版本，没有账号体系、WAF、独立文件扫描沙箱或完整渗透测试，不能据此承诺不会被攻击。
 
 ## 检查
 
