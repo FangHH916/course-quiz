@@ -18,10 +18,5 @@ window.ShizhiBackup={
     const db=await this.database();
     try{await new Promise((resolve,reject)=>{const transaction=db.transaction('snapshots','readwrite');transaction.objectStore('snapshots').put(value,key);transaction.oncomplete=()=>resolve();transaction.onerror=()=>reject(transaction.error);transaction.onabort=()=>reject(transaction.error||new Error('Backup transaction aborted'));});}
     finally{db.close();}
-  },
-  async remove(key){
-    const db=await this.database();
-    try{await new Promise((resolve,reject)=>{const transaction=db.transaction('snapshots','readwrite');transaction.objectStore('snapshots').delete(key);transaction.oncomplete=()=>resolve();transaction.onerror=()=>reject(transaction.error);});}
-    finally{db.close();}
   }
 };

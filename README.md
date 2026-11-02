@@ -67,29 +67,9 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
 node --check static/workspace.js
 node --check static/effects.js
-node --check static/accounts.js
 ```
 
 自动测试使用临时数据库，不修改正式学习记录。真实服务商连接、生成质量和延迟需要填写自己的 API Key 后验证。
-
-## 邮箱账号与跨设备同步（需配置 Firebase）
-
-右上角账号入口支持邮箱注册、发送验证邮件、验证完成、邮箱密码登录、重发验证邮件、找回密码和退出。未配置认证服务时保留浏览器工作区，并明确提示邮箱账号尚不可用，不会把输入邮箱直接当作登录成功。
-
-1. 在 Firebase 控制台创建 Spark 免费项目，无需绑定账单；如果控制台要求 Google 两步验证，必须由账号所有者完成。
-2. 创建一个 Web 应用，从配置中取得 `projectId` 与 Web `apiKey`。不需要服务账号私钥。
-3. 在 Authentication → Sign-in method 启用 Email/Password。不要启用匿名邮箱免验证登录。
-4. 在 Authentication → Settings → Authorized domains 添加部署域名 `shizhi-course-quiz.onrender.com`，检查验证邮件和重置邮件模板。
-5. 创建 Cloud Firestore Standard 默认数据库，建议 Singapore 区域，选择生产模式；将仓库里的 [firestore.rules](firestore.rules) 发布到 Rules。规则只允许已验证邮箱的用户读写自己的 `users/{uid}` 路径。
-6. 在 Render 服务环境变量中添加 `FIREBASE_PROJECT_ID` 和 `FIREBASE_API_KEY`，保留原有 `COURSE_QUIZ_SECRET`，重新部署。配置值见 [.env.example](.env.example) 的占位示例。
-
-邮箱验证与密码校验由 Firebase Authentication 完成，明文密码不保存到本站数据库或日志。ID token / refresh token 只在服务端内存及加密 HttpOnly Cookie 内使用，前端 JSON 不会收到令牌。会话最长 30 天，退出会清除本浏览器登录 Cookie；这不等同于吊销所有设备会话。
-
-验证成功后，当前浏览器的访客资料会并入账号，成功写入云端后才清理访客副本；复制失败时保留访客原资料。账号资料、测验和已提交成绩按用户身份加密后分块保存在 Firestore。服务器重启或换浏览器后，从同一已验证账号的云端备份恢复。相同数据不会反复重写。账号云同步失败时明确提示，并保留浏览器备份；不要在同步失败时清理浏览器数据或退出。
-
-API Key 默认仍不保存到账号。课程原始文件不落盘，服务端只保存提取文字。保持 Render 加密主密钥不变；更换 `COURSE_QUIZ_SECRET` 会使旧会话和已加密的学习记录不可解密。
-
-认证和 Firestore 的自动测试使用明确的模拟服务，没有真实发送邮件。接入真实 Firebase 项目后，仍需用你自己的邮箱确认验证邮件、重置邮件和跨设备恢复；未完成这些实测时不能视为正式账号集成验收通过。Spark 方案有邮件和数据库免费额度，参见 [Firebase 认证限额](https://firebase.google.com/docs/auth/limits) 和 [Firestore REST 认证说明](https://firebase.google.com/docs/firestore/use-rest-api)。
 
 接口依据：[DeepSeek 官方调用说明](https://api-docs.deepseek.com/)、[Chat Completions API](https://developers.openai.com/api/reference/resources/chat)。
 
