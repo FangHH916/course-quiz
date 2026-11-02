@@ -72,3 +72,7 @@ node --check static/effects.js
 自动测试使用临时数据库，不修改正式学习记录。真实服务商连接、生成质量和延迟需要填写自己的 API Key 后验证。
 
 接口依据：[DeepSeek 官方调用说明](https://api-docs.deepseek.com/)、[Chat Completions API](https://developers.openai.com/api/reference/resources/chat)。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)，允许复制、修改和商业使用，需保留版权及许可声明。许可证覆盖本仓库源码，不授予上传课程资料或其他第三方内容的使用权。
