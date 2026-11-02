@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#090e12">
+  <title>拾知 · Study with intention</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/workspace.js" defer></script>
+  <script src="/effects.js" defer></script>
+</head>
+<body>
+  <canvas id="ambient-canvas" aria-hidden="true"></canvas>
+  <div id="cursor-glow" aria-hidden="true"></div>
+  <a class="skip-link" href="#main">跳到主内容 / Skip to content</a>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="拾知 / Shizhi"><span class="brand-mark">拾</span><span>拾知<span class="brand-separator">/</span><span class="brand-en">SHIZHI</span></span></a>
+      <nav id="navigation" aria-label="Navigation"></nav>
+      <div class="topbar-right" id="top-actions"></div>
+    </header>
+    <main id="main" tabindex="-1"><div class="loading-state">正在打开学习空间 / Opening your workspace…</div></main>
+    <footer><span>SHIZHI<span class="footer-separator">/</span>STUDY WITH INTENTION.</span><span id="footer-note"></span></footer>
+  </div>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="modal" aria-labelledby="modal-title"></dialog>
+</body>
+</html>
