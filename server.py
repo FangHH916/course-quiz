@@ -37,6 +37,7 @@ DATA = Path(os.environ.get('COURSE_QUIZ_DATA', str(ROOT / 'data')))
 MAX_TEXT = 180_000
 MAX_FILE = 15 * 1024 * 1024
 MAX_BODY = 22 * 1024 * 1024
+MAX_SNAPSHOT = 64 * 1024 * 1024
 TYPES = {'calculation': '计算题', 'true_false': '判断题', 'choice': '选择题'}
 MODEL_SLOTS = threading.BoundedSemaphore(2)
 JOBS = {}
@@ -46,6 +47,7 @@ CLOUD = os.environ.get('COURSE_QUIZ_CLOUD') == '1'
 PUBLIC_ORIGIN = os.environ.get('COURSE_QUIZ_PUBLIC_ORIGIN', os.environ.get('RENDER_EXTERNAL_URL', '')).rstrip('/')
 APP_SECRET = os.environ.get('COURSE_QUIZ_SECRET', '')
 WORKSPACE = ContextVar('workspace', default=None)
+WORKSPACE_SYNC = ContextVar('workspace_sync', default=None)
 INITIALIZED = set()
 INIT_LOCK = threading.Lock()
 SNAPSHOT_TABLES = ('courses', 'materials', 'quizzes')
@@ -99,6 +101,21 @@ def localize_error(message, language):
         '支持 PDF、DOCX、PPTX、TXT、MD；旧版 DOC / PPT 请先另存为新格式。': 'Use PDF, DOCX, PPTX, TXT, or MD. Convert legacy DOC or PPT files first.',
         '此服务仅供本机访问。': 'This service is available only on this device.',
         '请求来源不受支持。': 'This request origin is not allowed.',
+        '请输入有效的邮箱地址。': 'Enter a valid email address.',
+        '请输入密码。': 'Enter your password.',
+        '注册密码至少 12 个字符，最多 128 个字符。': 'Use a password between 12 and 128 characters.',
+        '邮箱或密码不正确，或登录已失效，请重新登录。': 'The email or password is incorrect, or this session has expired. Sign in again.',
+        '该邮箱无法完成注册，请尝试登录或找回密码。': 'Registration could not be completed for this email. Try signing in or resetting your password.',
+        '账号操作过于频繁，请稍后再试。': 'Too many account requests. Try again shortly.',
+        '账号云同步权限未配置或邮箱尚未验证，请联系维护者。': 'Cloud account access is not configured or the email is unverified. Contact the site owner.',
+        '账号服务暂时不可用，请稍后重试。': 'The account service is temporarily unavailable. Try again shortly.',
+        '无法连接账号服务，请稍后重试。': 'Could not reach the account service. Try again shortly.',
+        '请先登录需要验证的邮箱账号。': 'Sign in to the email account you want to verify first.',
+        '请先退出当前账号，再登录其他邮箱。': 'Sign out before signing in to another email account.',
+        '请先完成或停止当前出题任务，再绑定邮箱。': 'Complete or stop the current generation task before linking your email.',
+        '邮箱账号服务尚未配置，当前仍可使用浏览器工作区。': 'Email accounts are not configured. Your browser workspace is still available.',
+        '账号云端备份不完整，请稍后重试，勿清除浏览器备份。': 'The cloud backup could not be restored. Try again later and keep your browser backup.',
+        '请求过于频繁，请稍后重试。': 'Too many requests. Try again shortly.',
     }
     if message in mapping:
         return mapping[message]
@@ -198,7 +215,7 @@ def restore_snapshot(db, token):
         return
     if token:
         try:
-            if not isinstance(token, str) or len(token) > MAX_BODY:
+            if not isinstance(token, str) or len(token) > MAX_SNAPSHOT:
                 raise ValueError('size')
             content = json.loads(snapshot_cipher().decrypt(token.encode()))
             if content.get('version') != 1 or set(content['tables']) != set(SNAPSHOT_TABLES):
@@ -588,6 +605,12 @@ def generate_worker(jid, cid, course_name, requirements, language, sources, conf
                         qid = save_quiz(db, cid, f'{course_name} · {len(questions)} {label}', questions)
             update_job(jid, status='error' if error else 'cancelled' if cancelled else 'complete',
                        completed=len(questions), total=sum(counts.values()) if counts else None, quiz_id=qid, error=error)
+            sync_callback = WORKSPACE_SYNC.get()
+            if qid and sync_callback:
+                try:
+                    sync_callback()
+                except Exception:
+                    update_job(jid, error='题目已生成，但账号云同步暂未完成。请保持页面打开并稍后刷新。')
         finally:
             config.clear()
             with JOBS_LOCK:
@@ -866,6 +889,7 @@ class Handler(BaseHTTPRequestHandler):
             if method != 'GET':
                 raise AppError('不支持的请求。', 405)
             files = {'/': ('index.html', 'text/html; charset=utf-8'), '/workspace.js': ('workspace.js', 'text/javascript; charset=utf-8'),
+                     '/accounts.js': ('accounts.js', 'text/javascript; charset=utf-8'),
                      '/storage.js': ('storage.js', 'text/javascript; charset=utf-8'),
                      '/effects.js': ('effects.js', 'text/javascript; charset=utf-8'),
                      '/style.css': ('style.css', 'text/css; charset=utf-8'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}

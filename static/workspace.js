@@ -6,7 +6,7 @@ function save(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
 const prefs=read('shizhi-api',{});
 let state={lang:read('shizhi-language','zh'),view:'workspace',courses:[],history:[],courseId:read('shizhi-course',''),
   requirements:read('shizhi-prompt',''),api:{base_url:prefs.base_url||'',model:prefs.model||'',api_key:''},
-  quiz:null,answers:{},filter:'all',historyCourse:'',busy:false,uploading:false,jobId:read('shizhi-job',''),job:null,cloud:false,storageId:''};
+  quiz:null,answers:{},filter:'all',historyCourse:'',busy:false,uploading:false,jobId:read('shizhi-job',''),job:null,cloud:false,storageId:'',account:{configured:false,user:null},syncWarning:''};
 if(!['zh','en'].includes(state.lang))state.lang='zh';
 const t=(zh,en)=>state.lang==='en'?en:zh;
 const labels=()=>({calculation:t('计算题','Calculation'),true_false:t('判断题','True / false'),choice:t('选择题','Multiple choice')});
@@ -18,7 +18,7 @@ async function api(path,data,method){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),path==='/api/check-model'?200000:60000);
   try{
     const response=await fetch(path,{method:method||(data===undefined?'GET':'POST'),headers:{...(data===undefined?{}:{'Content-Type':'application/json'}),'Accept-Language':state.lang},body:data===undefined?undefined:JSON.stringify(data),signal:controller.signal});
-    const result=await response.json();if(!response.ok){const error=new Error(result.error||t('请求失败。','Request failed.'));error.status=response.status;throw error;}return result;
+    const result=await response.json();if(!response.ok){const error=new Error(result.error||t('请求失败。','Request failed.'));error.status=response.status;throw error;}if(result.sync_warning)toast(result.sync_warning,true);return result;
   }catch(err){if(err.name==='AbortError')throw new Error(t('请求超时，请稍后重试。','Request timed out. Please try again.'));if(err instanceof TypeError)throw new Error(t('无法连接本地服务，请确认启动窗口仍在运行。','Cannot reach the local server. Make sure it is running.'));throw err;}
   finally{clearTimeout(timer);}
 }
@@ -30,14 +30,15 @@ async function refresh(){
     let snapshot;try{snapshot=await window.ShizhiBackup.get(state.storageId);}catch{throw new Error(t('请允许浏览器存储后重新打开，才能安全恢复学习资料。','Allow browser storage and reopen this page to restore your materials safely.'));}
     await api('/api/workspace/restore',{snapshot});result=await api('/api/state');
   }
-  state.courses=result.courses;state.history=result.history;if(!course())state.courseId=state.courses[0]?.id||'';save('shizhi-course',state.courseId);
+  state.account=result.account||{configured:false,user:null};state.syncWarning=result.sync_warning||'';state.courses=result.courses;state.history=result.history;if(!course())state.courseId=state.courses[0]?.id||'';save('shizhi-course',state.courseId);
   if(state.cloud){try{const backup=await api('/api/workspace/snapshot');await window.ShizhiBackup.put(state.storageId,backup.snapshot);}catch{toast(t('浏览器备份失败。请保持页面打开，检查浏览器存储空间后重试。','Browser backup failed. Keep this page open and check available browser storage.'),true);}}
 }
 function renderHeader(){
   document.documentElement.lang=state.lang==='en'?'en':'zh-CN';
   $('#navigation').innerHTML=[['workspace',t('工作台','Workspace')],['history',t('练习记录','Practice')],['mistakes',t('错题','Mistakes')]].map(([view,label])=>`<button class="nav-item ${state.view===view||(state.view==='quiz'&&view==='workspace')?'active':''}" data-view="${view}">${label}</button>`).join('');
   $('#top-actions').innerHTML=`<button class="utility-button language-button" data-action="language" aria-label="${t('切换为英文','Switch to Chinese')}">${icon('globe')}<span>${t('EN','中文')}</span></button><button class="utility-button effects-toggle" id="effects-toggle" data-action="effects" aria-pressed="${read('shizhi-effects',true)}" aria-label="${t('开关动态效果','Toggle motion effects')}">${icon('spark')}</button><button class="button button-white button-small" data-action="settings"><span class="connection-dot ${state.api.base_url&&state.api.model?'connected':''}"></span>API ${t('设置','settings')}</button>`;
-  $('#footer-note').textContent=state.cloud?t('浏览器独立空间 · 自动加密备份','Private browser workspace · encrypted backup'):t('资料与成绩保存在本机','Materials and results stay on this device');
+  $('#top-actions').insertAdjacentHTML('beforeend',`<button class="utility-button account-button" data-action="account" aria-label="${t('邮箱账号','Email account')}" title="${e(state.account.user?.email||t('邮箱登录','Email sign-in'))}" ${state.busy?'disabled':''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M4 21v-2c0-4 4-6 8-6s8 2 8 6v2"/></svg><span>${state.account.user?.verified?t('已登录','Signed in'):t('登录','Sign in')}</span></button>`);
+  $('#footer-note').textContent=state.account.user?.verified?(state.syncWarning?t('账号同步待重试 · 浏览器备份保留','Account sync pending · browser backup kept'):t('邮箱账号 · 学习记录已同步','Email account · learning records synced')):state.cloud?t('浏览器独立空间 · 自动加密备份','Private browser workspace · encrypted backup'):t('资料与成绩保存在本机','Materials and results stay on this device');
 }
 function render(){renderHeader();$('#main').innerHTML=state.view==='workspace'?workspaceHTML():state.view==='quiz'&&state.quiz?(state.quiz.result?resultHTML():quizHTML()):historyHTML();if(state.view==='workspace')bindWorkspace();if(state.view==='quiz'&&!state.quiz?.result)bindAnswers();document.dispatchEvent(new CustomEvent('shizhi:render'));}
 function go(view){state.view=view;state.filter='all';render();window.scrollTo(0,0);if(view!=='quiz')history.replaceState(null,'','/');}
@@ -134,6 +135,7 @@ document.addEventListener('click',async ev=>{const button=ev.target.closest('but
   if(d.action==='effects'){const enabled=!read('shizhi-effects',true);save('shizhi-effects',enabled);button.setAttribute('aria-pressed',String(enabled));document.dispatchEvent(new CustomEvent('shizhi:effects',{detail:enabled}));return;}
   if(d.action==='close-modal'){$('#modal').close();return;}
   if(d.action==='settings'){settings();return;}
+  if(d.action==='account'){if(!state.busy)emailAccount();return;}
   if(state.busy&&d.action!=='cancel-job')return;
   if(d.view){go(d.view);return;}
   if(d.action){await({'new-course':newCourse,paste:pasteMaterial,generate,submit:confirmSubmit,'cancel-job':cancelJob}[d.action]?.());return;}
