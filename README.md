@@ -2,6 +2,8 @@
 
 上传课程资料 → 定制题型 → 在线作答 → 自动评分与逐题解析。本地运行，连接自己的模型 API。
 
+线上地址：[https://shizhi-course-quiz.onrender.com](https://shizhi-course-quiz.onrender.com)（Render 免费实例）。
+
 ## 启动
 
 Windows 安装 Python 3.11 或以上，双击 **启动网站.cmd**。首次启动会在项目的 `.venv` 中安装 PDF 解析依赖，需要联网。随后在浏览器打开 [http://127.0.0.1:8767](http://127.0.0.1:8767)，使用期间保持启动窗口开启。
