@@ -3,9 +3,8 @@ const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelect
 const e=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function read(k,f){try{return JSON.parse(localStorage.getItem(k))??f;}catch{return f;}}
 function save(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
-const prefs=read('shizhi-api',{});
 let state={lang:read('shizhi-language','zh'),view:'workspace',courses:[],history:[],courseId:read('shizhi-course',''),
-  requirements:read('shizhi-prompt',''),api:{base_url:prefs.base_url||'',model:prefs.model||'',api_key:''},rememberDevice:false,
+  requirements:read('shizhi-prompt',''),
   quiz:null,answers:{},filter:'all',historyCourse:'',busy:false,uploading:false,jobId:read('shizhi-job',''),job:null,cloud:false,storageId:''};
 if(!['zh','en'].includes(state.lang))state.lang='zh';
 const t=(zh,en)=>state.lang==='en'?en:zh;
@@ -36,7 +35,7 @@ async function refresh(){
 function renderHeader(){
   document.documentElement.lang=state.lang==='en'?'en':'zh-CN';
   $('#navigation').innerHTML=[['workspace',t('工作台','Workspace')],['history',t('练习记录','Practice')],['mistakes',t('错题','Mistakes')]].map(([view,label])=>`<button class="nav-item ${state.view===view||(state.view==='quiz'&&view==='workspace')?'active':''}" data-view="${view}">${label}</button>`).join('');
-  $('#top-actions').innerHTML=`<button class="utility-button language-button" data-action="language" aria-label="${t('切换为英文','Switch to Chinese')}">${icon('globe')}<span>${t('EN','中文')}</span></button><button class="utility-button effects-toggle" id="effects-toggle" data-action="effects" aria-pressed="${read('shizhi-effects',true)}" aria-label="${t('开关动态效果','Toggle motion effects')}">${icon('spark')}</button><button class="button button-white button-small" data-action="settings"><span class="connection-dot ${state.api.base_url&&state.api.model?'connected':''}"></span>API ${t('设置','settings')}</button>`;
+  $('#top-actions').innerHTML=`<button class="utility-button language-button" data-action="language" aria-label="${t('切换为英文','Switch to Chinese')}">${icon('globe')}<span>${t('EN','中文')}</span></button>`;
   $('#footer-note').textContent=state.cloud?t('浏览器独立空间 · 自动加密备份','Private browser workspace · encrypted backup'):t('资料与成绩保存在本机','Materials and results stay on this device');
 }
 function render(){renderHeader();$('#main').innerHTML=state.view==='workspace'?workspaceHTML():state.view==='quiz'&&state.quiz?(state.quiz.result?resultHTML():quizHTML()):historyHTML();if(state.view==='workspace')bindWorkspace();if(state.view==='quiz'&&!state.quiz?.result)bindAnswers();document.dispatchEvent(new CustomEvent('shizhi:render'));}
@@ -71,7 +70,7 @@ function newCourse(){
 }
 function pasteMaterial(){
   if(!state.courseId){newCourse();toast(t('请先新建或选择课程。','Create or select a course first.'));return;}
-  baseModal(t('粘贴资料','Paste materials'),e(course().name),`<label class="field-label" for="paste-name">${t('资料名称','Material name')}</label><input id="paste-name" maxlength="200" placeholder="${t('例如：第三章笔记','e.g. Chapter 3 notes')}"><label class="field-label" for="paste-text">${t('资料正文','Content')}</label><textarea id="paste-text" maxlength="180000" placeholder="${t('粘贴笔记、公式说明或复习重点…','Paste notes, formulas, or key concepts…')}"></textarea>`,closeButton()+`<button class="button button-primary" id="save-paste">${t('添加资料','Add material')}</button>`);
+  baseModal(t('粘贴资料','Paste materials'),e(course().name),`<label class="field-label" for="paste-name">${t('资料名称','Material name')}</label><input id="paste-name" maxlength="200" placeholder="${t('例如：第三章笔记','e.g. Chapter 3 notes')}"><label class="field-label" for="paste-text">${t('资料正文','Content')}</label><textarea id="paste-text" placeholder="${t('粘贴笔记、公式说明或复习重点…','Paste notes, formulas, or key concepts…')}"></textarea>`,closeButton()+`<button class="button button-primary" id="save-paste">${t('添加资料','Add material')}</button>`);
   $('#save-paste').addEventListener('click',async()=>{const button=$('#save-paste');button.disabled=true;try{await api('/api/materials',{course_id:state.courseId,name:$('#paste-name').value||t('粘贴资料.txt','Pasted notes.txt'),text:$('#paste-text').value});await refresh();if(button.isConnected)$('#modal').close();render();toast(t('资料已添加。','Material added.'));}catch(err){modalError(err.message);button.disabled=false;}});
 }
 async function uploadFiles(files){
@@ -80,48 +79,10 @@ async function uploadFiles(files){
   try{for(const file of files){if(file.size>15*1024*1024){errors.push(`${file.name}: ${t('超过 15 MB','exceeds 15 MB')}`);continue;}if(!/\.(pdf|docx|pptx|txt|md)$/i.test(file.name)){errors.push(`${file.name}: ${t('不支持的格式','unsupported format')}`);continue;}try{const content=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=()=>reject(new Error(t('文件读取失败','Could not read file')));reader.readAsDataURL(file);});await api('/api/materials',{course_id:cid,name:file.name,content});added++;}catch(err){errors.push(`${file.name}: ${err.message}`);}}await refresh();}catch(err){errors.push(err.message);}finally{state.busy=false;state.uploading=false;render();}
   if(errors.length)baseModal(t('导入结果','Import results'),t(`已添加 ${added} 份资料`,`${added} materials added`),errors.map(err=>`<p class="modal-error">${e(err)}</p>`).join(''),`<button class="button button-primary" data-action="close-modal">${t('知道了','Done')}</button>`);else toast(t(`已添加 ${added} 份资料。`,`${added} materials added.`));
 }
-function settings(){
-  baseModal(t('连接你的模型','Connect your model'),t('兼容 Chat Completions 的 API 接口','Any Chat Completions compatible API'),`<label class="field-label" for="api-preset">${t('服务商','Provider')}</label><select id="api-preset"><option value="custom">${t('自定义接口','Custom endpoint')}</option><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="local">${t('本机模型','Local model')}</option></select><label class="field-label" for="api-base">API Base URL</label><input id="api-base" type="url" value="${e(state.api.base_url)}" placeholder="https://your-provider.com/v1" autocomplete="off"><label class="field-label" for="api-model">${t('模型名称','Model ID')}</label><input id="api-model" value="${e(state.api.model)}" placeholder="${t('服务商提供的模型 ID','Model identifier from your provider')}" autocomplete="off"><label class="field-label" for="api-key">API Key</label><div class="key-field"><input id="api-key" type="password" value="${e(state.api.api_key)}" placeholder="${t('本机无鉴权模型可留空','Optional for local models without authentication')}" autocomplete="off"><button class="button button-white button-small" id="toggle-key">${t('显示','Show')}</button></div><div class="modal-hint">${t('密钥仅在本次页面和任务处理的内存中使用，刷新后需重填。接口地址和模型名会记住。远程接口使用 HTTPS，本机可用 HTTP。','Your key stays in memory during this session and active tasks. Re-enter it after refreshing. Only the endpoint and model ID are remembered. Remote endpoints require HTTPS; local models may use HTTP.')}</div>`,`<button class="text-button clear-settings" id="clear-settings">${t('清除配置','Clear')}</button><button class="button button-primary" id="save-settings">${t('保存','Save')}</button>`);
-  const presets={deepseek:{base_url:'https://api.deepseek.com',model:'deepseek-flash'},openai:{base_url:'https://api.openai.com/v1',model:''},local:{base_url:'http://127.0.0.1:1234/v1',model:''}};
-  const hint=$('#modal .modal-hint');
-  hint.insertAdjacentHTML('beforebegin',`<label class="remember-device" for="remember-device"><input type="checkbox" id="remember-device" ${state.rememberDevice?'checked':''} aria-describedby="remember-device-help"><span>${t('在此设备记住密钥','Remember key on this device')}</span></label><p id="remember-device-help" class="remember-help">${t('加密保存在此浏览器，关闭时删除。请只在可信个人设备开启。','Encrypted in this browser; deleted when turned off. Enable only on a trusted personal device.')}</p>`);
-  hint.textContent=t('默认不保存密钥，刷新后需重填。接口地址和模型名会记住。','Keys are not saved by default and must be re-entered after refreshing. The endpoint and model ID are remembered.')+' '+(state.cloud?t('线上版仅支持公网 HTTPS 模型接口。','The hosted site supports public HTTPS model APIs only.'):t('远程接口使用 HTTPS，本机可用 HTTP。','Remote endpoints require HTTPS; local models may use HTTP.'));
-  if(state.cloud)$('#api-preset option[value="local"]').remove();
-  let keyEndpoint=$('#api-base').value.trim();
-  const endpointChanged=()=>{const next=$('#api-base').value.trim();if(next!==keyEndpoint)$('#api-key').value='';keyEndpoint=next;};
-  $('#api-base').addEventListener('input',endpointChanged);
-  $('#api-preset').addEventListener('change',ev=>{const p=presets[ev.target.value];if(p){$('#api-base').value=p.base_url;$('#api-model').value=p.model;endpointChanged();}});
-  $('#toggle-key').addEventListener('click',()=>{const input=$('#api-key');input.type=input.type==='password'?'text':'password';$('#toggle-key').textContent=input.type==='password'?t('显示','Show'):t('隐藏','Hide');});
-  const values=()=>({base_url:$('#api-base').value.trim(),model:$('#api-model').value.trim(),api_key:$('#api-key').value.trim()});
-  const controls=$$('#modal input, #modal select, #modal button');
-  const lock=busy=>controls.forEach(control=>control.disabled=busy);
-  const persistMetadata=()=>save('shizhi-api',{base_url:state.api.base_url,model:state.api.model,remember_device:state.rememberDevice});
-  const storageError=()=>modalError(t('无法访问浏览器安全存储，操作未完成。请允许此网站存储后重试。','Cannot access secure browser storage. The operation was not completed. Allow site storage and retry.'));
-  $('#remember-device').addEventListener('change',async ev=>{
-    if(ev.target.checked)return;
-    lock(true);
-    try{await window.ShizhiDeviceKey.clear();state.rememberDevice=false;persistMetadata();toast(t('已删除此浏览器保存的密钥，本页仍可继续使用。','Saved key deleted from this browser. You can still use it on this page.'));}
-    catch{ev.target.checked=state.rememberDevice;storageError();}finally{lock(false);}
-  });
-  $('#save-settings').addEventListener('click',async()=>{
-    const value=values(),remember=$('#remember-device').checked;
-    if(!value.base_url||!value.model){modalError(t('请填写接口地址和模型名称。','Enter an endpoint and model ID.'));return;}
-    if(remember&&!value.api_key){modalError(t('请填写要记住的 API Key，或关闭记住密钥。','Enter an API key to remember, or turn off Remember key.'));return;}
-    lock(true);
-    try{
-      if(remember)await window.ShizhiDeviceKey.save(value);else if(state.rememberDevice||prefs.remember_device)await window.ShizhiDeviceKey.clear();
-      state.api=value;state.rememberDevice=remember;persistMetadata();$('#modal').close();renderHeader();
-      toast(remember?t('已加密保存，刷新后会自动恢复。','Saved encrypted. Your key will be restored after refreshing.'):t('配置已保存，密钥仅本次有效。','Settings saved. Your key is kept only for this session.'));
-    }catch{storageError();}finally{lock(false);}
-  });
-  $('#clear-settings').addEventListener('click',async()=>{
-    lock(true);try{await window.ShizhiDeviceKey.clear();state.api={base_url:'',model:'',api_key:''};state.rememberDevice=false;save('shizhi-api',{});$('#modal').close();renderHeader();toast(t('API 配置及保存的密钥已清除。','API settings and saved key cleared.'));}catch{storageError();}finally{lock(false);}
-  });
-}
 async function generate(){
-  if(state.busy)return;if(!course()){newCourse();return;}if(!course().materials.length){toast(t('先上传或粘贴课程资料。','Upload or paste your course materials first.'),true);return;}if(!state.requirements.trim()){toast(t('请在对话框里说出你的出题要求。','Tell us what practice you would like in the text box.'),true);$('#requirements').focus();return;}if(!state.api.base_url||!state.api.model){settings();return;}
+  if(state.busy)return;if(!course()){newCourse();return;}if(!course().materials.length){toast(t('先上传或粘贴课程资料。','Upload or paste your course materials first.'),true);return;}if(!state.requirements.trim()){toast(t('请在对话框里说出你的出题要求。','Tell us what practice you would like in the text box.'),true);$('#requirements').focus();return;}
   state.busy=true;state.job={status:'planning',completed:0,total:null};render();
-  try{const result=await api('/api/generate',{course_id:state.courseId,requirements:state.requirements,language:state.lang,api:state.api});state.jobId=result.job_id;save('shizhi-job',state.jobId);pollJob();}catch(err){state.busy=false;state.job=null;render();toast(err.message,true);}
+  try{const result=await api('/api/generate',{course_id:state.courseId,requirements:state.requirements,language:state.lang});state.jobId=result.job_id;save('shizhi-job',state.jobId);pollJob();}catch(err){state.busy=false;state.job=null;render();toast(err.message,true);}
 }
 async function pollJob(){
   clearTimeout(pollTimer);if(!state.jobId)return;
@@ -158,10 +119,9 @@ async function preview(id){const result=await api(`/api/materials/${id}`);baseMo
 function confirmDelete(kind,id){baseModal(kind==='courses'?t('删除这门课程？','Delete this course?'):t('删除这份资料？','Delete this material?'),kind==='courses'?t('课程资料、测验和成绩会一并删除。','Its materials, quizzes, and results will also be deleted.'):t('已有测验解析中的引用会保留。','Quotes in existing quiz explanations will be kept.'),`<div class="modal-hint">${t('此操作无法在网站内撤销。','This cannot be undone in the app.')}</div>`,closeButton()+`<button class="button button-danger" id="confirm-delete">${t('确认删除','Delete')}</button>`);$('#confirm-delete').addEventListener('click',async()=>{const button=$('#confirm-delete');button.disabled=true;try{await api(`/api/${kind}/${id}`,undefined,'DELETE');await refresh();if(button.isConnected)$('#modal').close();go('workspace');toast(t('已删除。','Deleted.'));}catch(err){modalError(err.message);button.disabled=false;}});}
 document.addEventListener('click',async ev=>{const button=ev.target.closest('button');if(!button||button.disabled)return;const d=button.dataset;try{
   if(d.action==='language'){state.lang=state.lang==='en'?'zh':'en';save('shizhi-language',state.lang);if($('#modal').open)$('#modal').close();render();return;}
-  if(d.action==='effects'){const enabled=!read('shizhi-effects',true);save('shizhi-effects',enabled);button.setAttribute('aria-pressed',String(enabled));document.dispatchEvent(new CustomEvent('shizhi:effects',{detail:enabled}));return;}
+  
   if(d.action==='close-modal'){$('#modal').close();return;}
-  if(d.action==='settings'){settings();return;}
-  if(state.busy&&d.action!=='cancel-job')return;
+    if(state.busy&&d.action!=='cancel-job')return;
   if(d.view){go(d.view);return;}
   if(d.action){await({'new-course':newCourse,paste:pasteMaterial,generate,submit:confirmSubmit,'cancel-job':cancelJob}[d.action]?.());return;}
   if(d.preview)await preview(d.preview);if(d.deleteMaterial)confirmDelete('materials',d.deleteMaterial);if(d.deleteCourse)confirmDelete('courses',d.deleteCourse);
@@ -170,9 +130,5 @@ document.addEventListener('click',async ev=>{const button=ev.target.closest('but
 }catch(err){button.disabled=false;toast(err.message,true);}});
 document.addEventListener('change',ev=>{if(ev.target.id==='history-course'){state.historyCourse=ev.target.value;render();}});
 window.addEventListener('beforeunload',ev=>{if(state.uploading){ev.preventDefault();ev.returnValue='';}});
-async function restoreDeviceKey(){
-  try{const config=await window.ShizhiDeviceKey.load();if(config){state.api=config;state.rememberDevice=true;save('shizhi-api',{base_url:config.base_url,model:config.model,remember_device:true});}}
-  catch{if(prefs.remember_device)toast(t('无法恢复保存的密钥，请在 API 设置中重新填写或清除配置。','Cannot restore the saved key. Re-enter it or clear your API settings.'),true);}
-}
 async function start(){try{await refresh();const match=location.hash.match(/^#quiz=([a-f0-9]{32})$/);if(match){try{await openQuiz(match[1]);}catch{history.replaceState(null,'','/');render();}}else render();if(state.jobId){state.busy=true;await pollJob();}}catch(err){$('#main').innerHTML=`<div class="card empty-page"><h3>${t('无法打开学习空间','Cannot open your workspace')}</h3><p>${e(err.message)}</p><button class="button button-primary" id="retry-start">${t('重新连接','Reconnect')}</button></div>`;$('#retry-start').addEventListener('click',start);}}
-restoreDeviceKey().then(start);
+start();

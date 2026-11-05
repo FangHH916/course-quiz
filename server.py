@@ -34,7 +34,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get('COURSE_QUIZ_DATA', str(ROOT / 'data')))
-MAX_TEXT = 180_000
+
+
+def _configured_max_text(default=1_000_000):
+    # Course text cap: COURSE_QUIZ_MAX_CHARS env, else "max_chars" in api_config.json. Read at startup.
+    value = os.environ.get('COURSE_QUIZ_MAX_CHARS')
+    if not value:
+        try:
+            value = json.loads((ROOT / 'api_config.json').read_text(encoding='utf-8-sig')).get('max_chars')
+        except (OSError, ValueError, AttributeError):
+            value = None
+    try:
+        return max(20_000, int(value)) if value else default
+    except (TypeError, ValueError):
+        return default
+
+
+MAX_TEXT = _configured_max_text()
 MAX_FILE = 15 * 1024 * 1024
 MAX_BODY = 22 * 1024 * 1024
 TYPES = {'calculation': '计算题', 'true_false': '判断题', 'choice': '选择题'}
@@ -61,7 +77,7 @@ def localize_error(message, language):
     if not message or not language.lower().startswith('en'):
         return message
     mapping = {
-        '请先配置模型 API。': 'Configure your model API first.',
+        '网站尚未配置模型：请在项目目录的 api_config.json 中填写 base_url、model 和 api_key，然后重试。': 'The model is not configured. Fill in base_url, model and api_key in api_config.json in the project folder, then retry.',
         '请先上传或粘贴课程资料。': 'Upload or paste course materials first.',
         '已有出题任务在运行，请等待完成或先停止。': 'A generation task is already running. Wait for it to finish or stop it first.',
         '课程不存在，请重新选择。': 'This course no longer exists. Select another course.',
@@ -95,7 +111,7 @@ def localize_error(message, language):
         'PDF 已加密，请先解密后上传。': 'This PDF is encrypted. Decrypt it before uploading.',
         '单个 PDF 最多支持 400 页，请拆分后上传。': 'Split this PDF into files of up to 400 pages.',
         '单个文件需介于 1 字节和 15 MB 之间。': 'Each file must be between 1 byte and 15 MB.',
-        '本课程已超过 18 万字符上限，请删除部分资料或拆成另一门课程。所有已上传内容都会参与出题，不会静默截断。': 'This course exceeds 180,000 characters. Remove some materials or split them into another course. No text is silently truncated.',
+        f'本课程已超过 {MAX_TEXT:,} 字符上限，请删除部分资料或拆成另一门课程。所有已上传内容都会参与出题，不会静默截断。': f'This course exceeds {MAX_TEXT:,} characters. Remove some materials or split them into another course. No text is silently truncated.',
         '支持 PDF、DOCX、PPTX、TXT、MD；旧版 DOC / PPT 请先另存为新格式。': 'Use PDF, DOCX, PPTX, TXT, or MD. Convert legacy DOC or PPT files first.',
         '此服务仅供本机访问。': 'This service is available only on this device.',
         '请求来源不受支持。': 'This request origin is not allowed.',
@@ -108,6 +124,8 @@ def localize_error(message, language):
         return 'Please enter ' + name + '.'
     if message.startswith('资料不足：'):
         return 'The materials do not support the requested questions. Add more relevant material or adjust your instructions.'
+    if message.startswith('资料超出模型上下文长度'):
+        return 'The materials exceed the model context length. Remove some materials or split them into another course, then retry.'
     match = re.search(r'HTTP (\d+)', message)
     if match:
         return f'The model provider returned HTTP {match[1]}. Check your endpoint, model ID and provider status.'
@@ -367,9 +385,33 @@ class PublicHTTPSHandler(urllib.request.HTTPSHandler):
         return self.do_open(PublicHTTPSConnection, req, context=self._context)
 
 
+API_CONFIG_FILE = ROOT / 'api_config.json'
+
+
+def load_api_config():
+    """Model settings live on the server: env vars win, otherwise api_config.json next to server.py."""
+    config = {}
+    if API_CONFIG_FILE.exists():
+        try:
+            config = json.loads(API_CONFIG_FILE.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError):
+            raise AppError('api_config.json 格式有误，请检查引号和逗号。') from None
+        if not isinstance(config, dict):
+            raise AppError('api_config.json 格式有误。')
+    for field, env in (('base_url', 'COURSE_QUIZ_API_BASE_URL'), ('model', 'COURSE_QUIZ_API_MODEL'), ('api_key', 'COURSE_QUIZ_API_KEY')):
+        if os.environ.get(env):
+            config[field] = os.environ[env]
+    config = {k: str(config.get(k) or '').strip() for k in ('base_url', 'model', 'api_key')}
+    if not config['base_url'] or not config['model']:
+        raise AppError('网站尚未配置模型：请在项目目录的 api_config.json 中填写 base_url、model 和 api_key，然后重试。')
+    if not config['api_key'].isascii():
+        raise AppError('网站尚未配置模型：请在项目目录的 api_config.json 中填写 base_url、model 和 api_key，然后重试。')
+    return config
+
+
 def model_request(config, system, user, max_tokens=14000):
     if not isinstance(config, dict):
-        raise AppError('请先在 API 设置中填写模型信息。')
+        raise AppError('网站尚未配置模型 API。')
     base = required_text(config.get('base_url'), 'API 地址', 500).rstrip('/')
     model = required_text(config.get('model'), '模型名称', 150)
     key = config.get('api_key', '')
@@ -407,7 +449,7 @@ def model_request(config, system, user, max_tokens=14000):
         transport = PublicHTTPSHandler(context=ssl.create_default_context()) if CLOUD else urllib.request.HTTPSHandler(context=ssl.create_default_context())
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}) if CLOUD else urllib.request.ProxyHandler(), NoRedirect(), transport)
         request = urllib.request.Request(endpoint, body, headers, method='POST')
-        with opener.open(request, timeout=180) as response:
+        with opener.open(request, timeout=300) as response:
             raw = response.read(2 * 1024 * 1024 + 1)
         if len(raw) > 2 * 1024 * 1024:
             raise AppError('模型响应过大，请减少题数。', 502)
@@ -427,7 +469,14 @@ def model_request(config, system, user, max_tokens=14000):
         elif exc.code in (301, 302, 307, 308):
             message = 'API 地址发生重定向，请填写服务商提供的最终接口地址。'
         else:
-            message = f'模型服务返回 HTTP {exc.code}，请检查接口地址、模型名和服务商状态。'
+            try:
+                detail = exc.read(4096).decode('utf-8', 'replace').lower()
+            except Exception:
+                detail = ''
+            if exc.code in (400, 413) and ('context' in detail or 'too long' in detail or 'input_tokens' in detail or 'maximum' in detail):
+                message = '资料超出模型上下文长度，请删除部分资料或拆成另一门课程后重试。'
+            else:
+                message = f'模型服务返回 HTTP {exc.code}，请检查接口地址、模型名和服务商状态。'
         raise AppError(message, 502) from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise AppError('模型连接失败或超时，请检查网络和 API 地址。', 502) from None
@@ -712,20 +761,18 @@ def dispatch(method, path, data):
             chars = sum(len(s['text']) for s in segments)
             old = db.execute('SELECT COALESCE(SUM(chars),0) FROM materials WHERE course_id=?', (cid,)).fetchone()[0]
             if old + chars > MAX_TEXT:
-                raise AppError('本课程已超过 18 万字符上限，请删除部分资料或拆成另一门课程。所有已上传内容都会参与出题，不会静默截断。')
+                raise AppError(f'本课程已超过 {MAX_TEXT:,} 字符上限，请删除部分资料或拆成另一门课程。所有已上传内容都会参与出题，不会静默截断。')
             mid = uid()
             db.execute('INSERT INTO materials VALUES(?,?,?,?,?,?)', (mid, cid, name, json.dumps(segments, ensure_ascii=False), chars, time.time()))
             return {'id': mid, 'name': name, 'chars': chars}
         if method == 'POST' and path == '/api/check-model':
-            model_request(data.get('api'), 'You are a helpful assistant.', 'Reply with OK only.', 64)
+            model_request(load_api_config(), 'You are a helpful assistant.', 'Reply with OK only.', 64)
             return {'ok': True}
         if method == 'POST' and path == '/api/generate':
             cid = data.get('course_id')
             course = course_exists(db, cid)
             requirements = required_text(data.get('requirements'), '出题要求', 6000)
-            config = data.get('api')
-            if not isinstance(config, dict) or not config.get('base_url') or not config.get('model'):
-                raise AppError('请先配置模型 API。')
+            config = load_api_config()
             language = 'en' if data.get('language') == 'en' else 'zh'
             sources = source_blocks(db, cid)
             if not sources:
@@ -867,7 +914,6 @@ class Handler(BaseHTTPRequestHandler):
                 raise AppError('不支持的请求。', 405)
             files = {'/': ('index.html', 'text/html; charset=utf-8'), '/workspace.js': ('workspace.js', 'text/javascript; charset=utf-8'),
                      '/storage.js': ('storage.js', 'text/javascript; charset=utf-8'),
-                     '/device-key.js': ('device-key.js', 'text/javascript; charset=utf-8'),
                      '/effects.js': ('effects.js', 'text/javascript; charset=utf-8'),
                      '/style.css': ('style.css', 'text/css; charset=utf-8'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
             if path not in files:

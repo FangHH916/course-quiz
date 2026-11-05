@@ -14,3 +14,9 @@ services:
         value: "1"
       - key: COURSE_QUIZ_SECRET
         generateValue: true
+      - key: COURSE_QUIZ_API_BASE_URL
+        value: https://api.deepseek.com
+      - key: COURSE_QUIZ_API_MODEL
+        value: deepseek-chat
+      - key: COURSE_QUIZ_API_KEY
+        sync: false

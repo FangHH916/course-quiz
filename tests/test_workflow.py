@@ -51,6 +51,9 @@ class StudyWorkflow(unittest.TestCase):
         self.old = app.DATA
         app.DATA = Path(self.tmp.name)
         app.init_db()
+        api_patch = patch.object(app, 'load_api_config', return_value={'base_url': 'https://test.example/v1', 'model': 'test', 'api_key': 'test-secret-never-persist'})
+        api_patch.start()
+        self.addCleanup(api_patch.stop)
 
     def tearDown(self):
         app.DATA = self.old
