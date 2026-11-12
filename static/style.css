@@ -12,3 +12,8 @@ dialog{border:1px solid #3c5b486b;border-radius:13px;padding:0;background:#111c1
 
 .remember-device{display:flex;align-items:center;gap:10px;margin-top:20px;color:var(--ink);font-size:12px;cursor:pointer}.modal-body .remember-device input{width:16px;height:16px;margin:0;flex-shrink:0;accent-color:var(--accent)}.remember-help{margin:7px 0 0 26px;font-size:11px;color:var(--muted);line-height:1.8}
 @media(max-width:620px){.effects-toggle{display:flex}.brand-en,.brand-separator{display:none}}
+.text-answer{min-height:150px;width:100%;font-size:13px}
+.text-comparison{display:grid;gap:14px;padding:13px 16px;border:1px solid #50735826;border-radius:7px;background:#77bc8c04;font-size:12px;color:#b2d9bd}
+.text-comparison strong{display:block;font-size:10px;font-weight:500;color:#6d9d79;margin-bottom:5px}
+.text-comparison div div{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.9}
+.text-comparison .wrong-answer{color:#e7b4a8}

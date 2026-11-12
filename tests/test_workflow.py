@@ -119,6 +119,48 @@ class StudyWorkflow(unittest.TestCase):
         self.assertEqual(app.grade(questions, {'1':False,'2':'b'})['score'],100)
         self.assertEqual(app.grade(questions, {'1':'false','2':'A'})['score'],0)
 
+    def test_multiple_select_needs_exact_set(self):
+        q = [{'id':'1','type':'multiple','options':['a','b','c','d','e'],'answer':['A','C']}]
+        self.assertEqual(app.grade(q, {'1':['c','A']})['score'],100)
+        self.assertEqual(app.grade(q, {'1':['A']})['score'],0)
+        self.assertEqual(app.grade(q, {'1':['A','C','E']})['score'],0)
+        self.assertEqual(app.grade(q, {})['score'],0)
+        with self.assertRaises(app.AppError):app.grade(q, {'1':'AC'*500})
+
+    def test_written_answers_graded_by_model_with_partial_points(self):
+        q = [{'id':'1','type':'text','label':'论述题','stem':'论述折现','answer':'参考','rubric':'要点'},
+             {'id':'2','type':'text','stem':'名词解释','answer':'参考'},
+             {'id':'3','type':'true_false','answer':True}]
+        reply = json.dumps({'grades':[{'id':'1','score':75,'feedback':'缺少例子'}]})
+        with patch.object(app,'model_request',return_value=reply) as mock:
+            result = app.grade(q, {'1':'我的论述','2':'  ','3':True}, {'base_url':'https://x','model':'m'})
+        self.assertEqual(mock.call_count,1)
+        self.assertEqual([x['id'] for x in json.loads(mock.call_args.args[2])['questions']],['1'])
+        self.assertEqual(result['score'], round((75+0+100)/3,1))
+        self.assertEqual(result['items'][0]['feedback'],'缺少例子')
+        self.assertTrue(result['items'][0]['correct'])
+        self.assertEqual(result['breakdown']['论述题'],{'total':1,'correct':1})
+        with patch.object(app,'model_request',return_value='{"grades":[]}'):
+            with self.assertRaisesRegex(app.AppError,'不完整'):app.grade(q, {'1':'x'}, {'base_url':'https://x','model':'m'})
+
+    def test_validate_any_question_type_and_plan_groups(self):
+        cid,raw,sources=self.generated_fixture()
+        base=raw['questions'][0]
+        multi={**base,'type':'multiple','stem':'不定项','options':['甲','乙','丙'],'answer':['C','A']}
+        single={**base,'type':'choice','stem':'五选一','options':['1','2','3','4','5'],'answer':'E'}
+        text={**base,'type':'text','stem':'名词解释：折现','answer':'把未来现金流换算为现值','rubric':'定义 60 分，公式 40 分'}
+        out=app.validate_questions({'questions':[multi]},{'multiple':1},sources,'不定项选择题')
+        self.assertEqual(out[0]['answer'],['A','C']);self.assertEqual(out[0]['label'],'不定项选择题')
+        self.assertEqual(app.validate_questions({'questions':[single]},{'choice':1},sources)[0]['answer'],'E')
+        self.assertEqual(app.validate_questions({'questions':[text]},{'text':1},sources)[0]['rubric'],'定义 60 分，公式 40 分')
+        with self.assertRaisesRegex(app.AppError,'不定项'):
+            app.validate_questions({'questions':[{**multi,'answer':['D']}]},{'multiple':1},sources)
+        groups=app.read_plan({'groups':[{'type':'text','label':'论述题','count':2,'note':'300字'},{'type':'multiple','count':0}]})
+        self.assertEqual(groups,[{'type':'text','label':'论述题','count':2,'note':'300字'}])
+        self.assertEqual(app.read_plan({'counts':{'calculation':3}})[0]['label'],'计算题')
+        quiz=app.public_quiz({'id':'q','course_id':cid,'title':'t','demo':0,'result':None,'questions':json.dumps(out+[app.validate_questions({'questions':[text]},{'text':1},sources)[0]])})
+        self.assertTrue(all('answer' not in q and 'rubric' not in q for q in quiz['questions']))
+
     def test_upload_persist_preview_delete(self):
         cid = app.dispatch('POST','/api/courses',{'name':'测试课程'})['id']
         content = '现金流折现公式：PV = FV / (1+r)^t，r 是折现率，t 是期数。'
